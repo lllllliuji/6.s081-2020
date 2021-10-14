@@ -11,9 +11,10 @@ main(int argc, char *argv[])
 
   if(argc < 3 || (argv[1][0] < '0' || argv[1][0] > '9')){
     fprintf(2, "Usage: %s mask command\n", argv[0]);
+    // fprintf(2, "here\n");
     exit(1);
   }
-
+  // fprintf(1, "before trace\n");
   if (trace(atoi(argv[1])) < 0) {
     fprintf(2, "%s: trace failed\n", argv[0]);
     exit(1);
@@ -22,6 +23,7 @@ main(int argc, char *argv[])
   for(i = 2; i < argc && i < MAXARG; i++){
     nargv[i-2] = argv[i];
   }
+  // fprintf(2, "before exec\n");
   exec(nargv[0], nargv);
   exit(0);
 }
