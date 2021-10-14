@@ -105,3 +105,29 @@ sys_trace(void) {
   p->trace_mask = mask;
   return 0;
 }
+
+extern uint64 my_count_free_page(uint64*);
+extern uint64 my_count_used_process(uint64*);
+uint64
+sys_sysinfo(void) {
+  
+  
+  struct proc *p = myproc();
+
+  uint64 addr = p->trapframe->a0;
+
+  struct {
+    uint64 freemem;
+    uint64 nproc;
+  } info;
+  info.freemem = 0;
+  info.nproc = 0;
+  my_count_free_page(&info.freemem);
+  my_count_used_process(&info.nproc);
+
+  if (copyout(p->pagetable, addr, (char*) &info, sizeof(info)) < 0) {
+    return -1;
+  }
+  
+  return 0;
+}

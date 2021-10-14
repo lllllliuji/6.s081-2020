@@ -695,3 +695,15 @@ procdump(void)
     printf("\n");
   }
 }
+uint64
+my_count_used_process(uint64* nproc) {
+  struct proc *p;
+  acquire(&pid_lock);
+  for(p = proc; p < &proc[NPROC]; p++) {
+    if(p->state != UNUSED) {
+      (*nproc) ++;
+    }
+  }
+  release(&pid_lock);
+  return 0;
+}
