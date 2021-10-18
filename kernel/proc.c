@@ -84,6 +84,16 @@ allocpid() {
 
   return pid;
 }
+// void  prockstackinit(void) {
+//  struct proc* p = myproc();
+//  mappages(p->k_pagetable, KSTACK((int) (p - proc)), PGSIZE, kvmpa(KSTACK((int) (p - proc))), PTE_R | PTE_W);
+// }
+
+void prockvminithart(void) {
+  struct proc* p = myproc();
+  w_satp(MAKE_SATP(p->k_pagetable));
+  sfence_vma();
+}
 
 // Look in the process table for an UNUSED proc.
 // If found, initialize state required to run in the kernel,
@@ -127,7 +137,45 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  p->k_pagetable = prockvminit();
+  mappages(p->k_pagetable, KSTACK((int) (p - proc)), PGSIZE, kvmpa(KSTACK((int) (p - proc))), PTE_R | PTE_W);
+  
   return p;
+}
+/*
+  // Recursively free page-table pages.
+// All leaf mappings must already have been removed.
+void
+freewalk(pagetable_t pagetable)
+{
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      freewalk((pagetable_t)child);
+      pagetable[i] = 0;
+    } else if(pte & PTE_V){
+      panic("freewalk: leaf");
+    }
+  }
+  kfree((void*)pagetable);
+}
+*/
+
+void myfreewalk(pagetable_t pagetable) {
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      myfreewalk((pagetable_t)child);
+      pagetable[i] = 0;
+    }
+  }
+  kfree((void*)pagetable);
 }
 
 // free a proc structure and the data hanging from it,
@@ -150,6 +198,7 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  myfreewalk(p->k_pagetable);
 }
 
 // Create a user page table for a given process,
@@ -473,8 +522,13 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        // check to current process's k_pagetable
+        prockvminithart();
+        
         swtch(&c->context, &p->context);
 
+        // scheduler should use global kernel_pagetable, so check back
+        kvminithart();
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
