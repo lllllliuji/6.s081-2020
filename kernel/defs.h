@@ -181,6 +181,9 @@ int             copyinstr(pagetable_t, char *, uint64, uint64);
 void            vmprint(pagetable_t);
 pagetable_t     prockvminit(void);
 void            freewalk(pagetable_t);
+void            mapu2k(pagetable_t, pagetable_t, uint64, uint64);
+int             copyin_new(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len);
+int             copyinstr_new(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max);
 
 // plic.c
 void            plicinit(void);

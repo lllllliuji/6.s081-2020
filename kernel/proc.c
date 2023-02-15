@@ -172,8 +172,9 @@ void myfreewalk(pagetable_t pagetable) {
       // this PTE points to a lower-level page table.
       uint64 child = PTE2PA(pte);
       myfreewalk((pagetable_t)child);
-      pagetable[i] = 0;
+      // pagetable[i] = 0;
     }
+    // pagetable[i] = 0;
   }
   kfree((void*)pagetable);
 }
@@ -269,6 +270,9 @@ userinit(void)
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
+  if (p->sz < PLIC) {
+    mapu2k(p->pagetable, p->k_pagetable, 0, p->sz);
+  }
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
@@ -298,6 +302,9 @@ growproc(int n)
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
+  if (sz < PLIC) {
+    mapu2k(p->pagetable, p->k_pagetable, p->sz, sz);
+  }
   p->sz = sz;
   return 0;
 }
@@ -323,6 +330,9 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
+  if (np->sz < PLIC) {
+    mapu2k(np->pagetable, np->k_pagetable, 0, np->sz);
+  }
 
   np->parent = p;
 
