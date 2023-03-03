@@ -159,8 +159,17 @@ kerneltrap()
   }
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2 && myproc() != 0 && myproc()->state == RUNNING)
+  if(which_dev == 2 && myproc() != 0 && myproc()->state == RUNNING) {
+    struct proc *p = myproc();
+    p->tick_since_last_alarm++;
+    if (!p->alarm_pending && p->alarm_ticks_internal != 0 && p->tick_since_last_alarm == p->alarm_ticks_internal) {
+      p->tick_since_last_alarm = 0;
+      p->saved_trapframe = *(p->trapframe);
+      p->trapframe->epc = p->alarm_handler;
+      p->alarm_pending = 1;
+    }
     yield();
+  }
 
   // the yield() may have caused some traps to occur,
   // so restore trap registers for use by kernelvec.S's sepc instruction.
