@@ -233,6 +233,42 @@ userinit(void)
   release(&p->lock);
 }
 
+int check_lazy_addr(pagetable_t pagetable,  uint64 va) {
+  struct proc *p = myproc();
+  if (pagetable != 0 && p->pagetable != pagetable) {
+    return 0;
+  }
+  if (va >= p->sz) {
+    return 0;
+  }
+  uint64 stack_base = PGROUNDDOWN(p->trapframe->sp);
+  if (va >= stack_base - PGSIZE && va < stack_base) {
+    return 0;
+  } 
+  return 1;
+}
+
+int do_alloc(uint64 va) {
+  if (!check_lazy_addr(0, va)) {
+    return -1;
+  }
+  char *mem;
+  struct proc *p = myproc();
+  va = PGROUNDDOWN(va);
+  mem = kalloc();
+  if(mem == 0){
+    uvmdealloc(p->pagetable, va, 1);
+    return -1;
+  }
+  memset(mem, 0, PGSIZE);
+  if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+    kfree(mem);
+    uvmdealloc(p->pagetable, va, 1);
+    return -1;
+  }
+  return 0;
+}
+
 // Grow or shrink user memory by n bytes.
 // Return 0 on success, -1 on failure.
 int
@@ -243,9 +279,10 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
-      return -1;
-    }
+    // if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    //   return -1;
+    // }
+    sz += n;
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
