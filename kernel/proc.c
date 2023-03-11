@@ -694,3 +694,28 @@ procdump(void)
     printf("\n");
   }
 }
+
+int
+do_cow_alloc(pagetable_t pagetable, uint64 va) {
+  if (va >= MAXVA) {
+    return -1;
+  }
+  pte_t *pte = walk(pagetable, va, 0);
+  if (pte == 0) {
+    return -1;
+  }
+  if (((*pte) & PTE_U) == 0 || ((*pte) & PTE_V) == 0 || ((*pte) & PTE_COW) == 0) {
+    return -1;
+  }
+  char *mem = kalloc();
+  if (mem == 0) {
+    return -1;
+  }
+  uint64 pa;
+  pa = PTE2PA(*pte);
+  memmove(mem, (char*) pa, PGSIZE);
+  kfree((void*) pa);
+  (*pte) = PA2PTE(mem) | PTE_FLAGS(*pte) | PTE_W;
+  (*pte) &= ~PTE_COW;
+  return 0;
+}
