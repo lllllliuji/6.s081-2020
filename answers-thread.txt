@@ -1,0 +1,2 @@
+1. thread switch just like function call, just save callee saved register
+2. multithread overwrite other thread's write
