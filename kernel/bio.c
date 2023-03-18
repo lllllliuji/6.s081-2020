@@ -33,23 +33,152 @@ struct {
   struct buf head;
 } bcache;
 
+// struct {
+//   struct spinlock lock;
+//   struct buf mem;
+// } freelist;
+
+struct {
+  struct spinlock lock;
+  struct buf head;
+  struct buf tail;
+} lru;
+
+struct frame {
+  uint used;
+  uint dev;
+  uint blockno;
+  uint frame_id;
+  struct frame *prev;
+  struct frame *next;
+} frames[NBUF];
+
+struct spinlock frame_lock;
+
+struct bucket {
+  struct spinlock lock;
+  struct frame head;
+};
+
+struct {
+  struct bucket entries[NENTRY];
+} hashtable;
+
+void add2front(struct buf *b) {
+  acquire(&lru.lock);
+  b->prev->next = b->next;
+  b->next->prev = b->prev;
+  b->next = lru.head.next;
+  b->prev = &lru.head;
+  lru.head.next->prev = b;
+  lru.head.next = b;
+  release(&lru.lock);
+}
+
+
+int allocateframe() {
+  acquire(&frame_lock);
+  int i;
+  for (i = 0; i < NBUF; i++) {
+    if (frames[i].used == 0) {
+      frames[i].used = 1;
+      break;
+    }
+  }
+  release(&frame_lock);
+  // printf("allocateframe %d\n", i);
+  return i;
+}
+
+void deleteentry(uint dev, uint blockno) {
+  int pos = (dev + blockno) % NENTRY;
+  struct frame *f = hashtable.entries[pos].head.next;
+  int found = 0;
+  while (f) {
+    if (f->dev == dev && f->blockno == blockno) {
+      found = 1;
+      break;
+    }
+    f = f->next;
+  }
+  if (!found) {
+    return;
+  }
+  f->prev->next = f->next;
+  if (f->next) {
+    f->next->prev = f->prev;
+  }
+  acquire(&frame_lock);
+  f->prev = 0;
+  f->next = 0;
+  f->used = 0;
+  // printf("delete frame %d dev %d block %d\n", f - frames, bcache.buf[f->frame_id].dev, bcache.buf[f->frame_id].blockno);
+  release(&frame_lock);
+}
+
+void add2hashtable(struct buf *b) {
+  // printf("add2hashtable dev %d blockno %d\n", b->dev, b->blockno);
+  int pos = (b->dev + b->blockno) % NENTRY;
+  struct frame *f = hashtable.entries[pos].head.next;
+  int exist = 0;
+  while (f) {
+    if (f->dev == b->dev && f->blockno == b->blockno) {
+      exist = 1;
+      break;
+    }
+    f = f->next;
+  }
+  if (exist) {
+    return;
+  }
+  int i = allocateframe();
+  frames[i].dev = b->dev;
+  frames[i].blockno = b->blockno;
+  frames[i].frame_id = b - bcache.buf;
+
+  frames[i].next = hashtable.entries[pos].head.next;
+  frames[i].prev = &hashtable.entries[pos].head;
+  if (hashtable.entries[pos].head.next) {
+    hashtable.entries[pos].head.next->prev = &frames[i];
+  }
+  hashtable.entries[pos].head.next = &frames[i];
+}
+
 void
 binit(void)
 {
   struct buf *b;
 
   initlock(&bcache.lock, "bcache");
+  initlock(&lru.lock, "lru");
+  initlock(&frame_lock, "frames");
 
-  // Create linked list of buffers
-  bcache.head.prev = &bcache.head;
-  bcache.head.next = &bcache.head;
-  for(b = bcache.buf; b < bcache.buf+NBUF; b++){
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
+  // 1. lru init
+  lru.head.next = &lru.tail;
+  lru.head.prev = 0;
+  lru.tail.prev = &lru.head;
+  lru.tail.next = 0;
+  printf("lru.head %p, lru.tail %p\n", &lru.head, &lru.tail);
+  for (b = bcache.buf; b < bcache.buf + NBUF; b++) {
+    b->next = lru.head.next;
+    b->prev = &lru.head;
+    lru.head.next->prev = b;
+    lru.head.next = b;
     initsleeplock(&b->lock, "buffer");
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
   }
+  // 2. hashtable init
+  for (int i = 0; i < NENTRY; i++) {
+    hashtable.entries[i].head.prev = 0;
+    hashtable.entries[i].head.next = 0;
+    // printf("hashtable.entris[i].head.prev %p, next %p\n", hashtable.entries[i].head.prev, hashtable.entries[i].head.next);
+    initlock(&hashtable.entries[i].lock, "entry");
+  }
+
+  // 3. frame init
+  for (int i = 0; i < NBUF; i++) {
+    frames[i].used = 0;
+  }
+  // printf("init complete\n");
 }
 
 // Look through buffer cache for block on device dev.
@@ -59,32 +188,55 @@ static struct buf*
 bget(uint dev, uint blockno)
 {
   struct buf *b;
+  // printf("cpu %d bget\n", cpuid());
+  int pos = (dev + blockno) % NENTRY;
+  acquire(&hashtable.entries[pos].lock);
 
-  acquire(&bcache.lock);
-
-  // Is the block already cached?
-  for(b = bcache.head.next; b != &bcache.head; b = b->next){
-    if(b->dev == dev && b->blockno == blockno){
-      b->refcnt++;
-      release(&bcache.lock);
-      acquiresleep(&b->lock);
-      return b;
+  // 1. is the block already cached ?
+  int found = 0;
+  struct frame *e = hashtable.entries[pos].head.next;
+  while (e) {
+    if (e->dev == dev && e->blockno == blockno) {
+      found = 1;
+      break;
     }
+    e = e->next;
+    // printf("here1\n");
   }
-
-  // Not cached.
-  // Recycle the least recently used (LRU) unused buffer.
-  for(b = bcache.head.prev; b != &bcache.head; b = b->prev){
-    if(b->refcnt == 0) {
-      b->dev = dev;
+  if (found) {
+    b = &bcache.buf[e->frame_id];
+    b->refcnt++;
+    add2front(b);
+    release(&hashtable.entries[pos].lock);
+    acquiresleep(&b->lock);
+    return b;
+  }
+  // 2. evict a block
+  acquire(&lru.lock);
+  b = lru.tail.prev;
+  // printf("b %p lru.head %p\n", b, &lru.head);
+  while (b != &lru.head) {
+    if (b->refcnt == 0) {
+      deleteentry(b->dev, b->blockno);
+      b->dev =  dev;
       b->blockno = blockno;
       b->valid = 0;
       b->refcnt = 1;
-      release(&bcache.lock);
-      acquiresleep(&b->lock);
-      return b;
+      found = 1; 
+      break;
     }
+    // printf("b %p lru.head %p\n", b, &lru.head);
+    b = b->prev;
   }
+  release(&lru.lock);
+  if (found) {
+    add2front(b);
+    add2hashtable(b);
+    release(&hashtable.entries[pos].lock);
+    acquiresleep(&b->lock);
+    return b;
+  }
+  release(&hashtable.entries[pos].lock);
   panic("bget: no buffers");
 }
 
@@ -116,38 +268,31 @@ bwrite(struct buf *b)
 void
 brelse(struct buf *b)
 {
-  if(!holdingsleep(&b->lock))
+  if(!holdingsleep(&b->lock)) {
+    // printf("dev %d,  blockno %d", b->dev, b->blockno);
     panic("brelse");
-
-  releasesleep(&b->lock);
-
-  acquire(&bcache.lock);
-  b->refcnt--;
-  if (b->refcnt == 0) {
-    // no one is waiting for it.
-    b->next->prev = b->prev;
-    b->prev->next = b->next;
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
   }
-  
-  release(&bcache.lock);
+  releasesleep(&b->lock);
+  int pos = (b->dev + b->blockno) % NENTRY;
+  acquire(&hashtable.entries[pos].lock);
+  b->refcnt--;
+  release(&hashtable.entries[pos].lock);
 }
 
 void
 bpin(struct buf *b) {
-  acquire(&bcache.lock);
+  int pos = (b->dev + b->blockno) % NENTRY;
+  acquire(&hashtable.entries[pos].lock);
   b->refcnt++;
-  release(&bcache.lock);
+  release(&hashtable.entries[pos].lock);
 }
 
 void
 bunpin(struct buf *b) {
-  acquire(&bcache.lock);
+  int pos = (b->dev + b->blockno) % NENTRY;
+  acquire(&hashtable.entries[pos].lock);
   b->refcnt--;
-  release(&bcache.lock);
+  release(&hashtable.entries[pos].lock);
 }
 
 
