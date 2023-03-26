@@ -314,6 +314,26 @@ sys_open(void)
       end_op();
       return -1;
     }
+    int depth = 0;
+    // printf("=========\n");
+    while (ip->type == T_SYMLINK && ((omode & O_NOFOLLOW )== 0) && depth < 10) {
+      // printf("symbolic path: %s\n", path);
+      readi(ip, 0, (uint64) path, 0, MAXPATH);
+      // printf("path: %s\n", path);
+      iunlockput(ip);
+      if ((ip = namei(path)) == 0) {
+        end_op();
+        // printf("fail at here path: %s\n", path);
+        return -1;
+      }
+      ilock(ip);
+      depth++;
+    }
+    if (depth == 10) {
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
   }
 
   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
@@ -482,5 +502,24 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+
+uint64
+sys_symlink(void) {
+  char target[MAXPATH], path[MAXPATH];
+  struct inode *ip;
+
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+  begin_op();
+  if ((ip = create(path, T_SYMLINK, 0, 0)) == 0) {
+    end_op();
+    return -1;
+  }
+  writei(ip, 0, (uint64) target, 0, MAXPATH);
+  iunlockput(ip);
+  end_op();
   return 0;
 }

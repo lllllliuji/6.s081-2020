@@ -316,8 +316,11 @@ ilock(struct inode *ip)
 void
 iunlock(struct inode *ip)
 {
-  if(ip == 0 || !holdingsleep(&ip->lock) || ip->ref < 1)
+  if(ip == 0 || !holdingsleep(&ip->lock) || ip->ref < 1) {
+    // printf("a: %d, b: %d, c: %d\n", ip == 0, !holdingsleep(&ip->lock), ip->ref < 1);
     panic("iunlock");
+  }
+    
 
   releasesleep(&ip->lock);
 }
@@ -683,6 +686,7 @@ namex(char *path, int nameiparent, char *name)
     ilock(ip);
     if(ip->type != T_DIR){
       iunlockput(ip);
+      // printf("here a\n");
       return 0;
     }
     if(nameiparent && *path == '\0'){
@@ -692,6 +696,7 @@ namex(char *path, int nameiparent, char *name)
     }
     if((next = dirlookup(ip, name, 0)) == 0){
       iunlockput(ip);
+      // printf("here b, name: %s\n", name);
       return 0;
     }
     iunlockput(ip);
