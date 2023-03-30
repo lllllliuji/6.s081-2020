@@ -484,3 +484,200 @@ sys_pipe(void)
   }
   return 0;
 }
+
+int check_last_unmap(struct vma *vma) {
+  int flag = 1;
+  for (uint64 addr = vma->addr; addr < vma->end; addr += PGSIZE) {
+    int idx = (addr - vma->addr) / PGSIZE;
+    if ((vma->deleted & (1 << idx)) == 0) {
+      flag = 0;
+      break;
+    }
+  }
+  return flag;
+}
+
+uint64
+sys_mmap(void) {
+  uint64 addr;
+  int prot, flags, fd;
+  uint64 length, offset;
+  // printf("sys_mmap\n");
+  if(argaddr(0, &addr) < 0 || argaddr(1, &length) < 0 || argint(2, &prot) < 0 
+      || argint(3, &flags) < 0 || argint(4, &fd) < 0 || argaddr(4, &offset) < 0) {
+    printf("here\n");
+    return -1;
+  }
+  struct proc *p = myproc();
+  struct file *f = p->ofile[fd];
+
+  // check mmap permission match file permission
+  if (flags & MAP_SHARED) {
+    int file_perm = f->readable + 2 * f->writable;
+    if (prot > file_perm) {
+      return -1;
+    }
+  }
+  int i;
+  for (i = 0; i < MAXMMAP; i++) {
+    if (p->mmem[i].used == 0) {
+      p->mmem[i].used = 1;
+      p->mmem[i].addr = PGROUNDUP(p->sz);
+      p->mmem[i].end = p->mmem[i].addr + length;
+      p->sz = PGROUNDUP(p->sz) + length;
+      p->mmem[i].flags = flags;
+      p->mmem[i].prot = prot;
+      p->mmem[i].length = length;
+      p->mmem[i].deleted = 0;
+      p->mmem[i].alloc = 0;
+      p->mmem[i].file = filedup(f);
+      break;
+    }
+  }
+  if (i == MAXMMAP) {
+    printf("here2\n");
+    return -1;
+  }
+  // printf("p->sz %d\n", p->sz);
+  return p->mmem[i].addr;
+}
+
+uint64
+sys_munmap(void) {
+  // printf("munmap\n");
+  uint64 addr;
+  uint64 length;
+  if (argaddr(0, &addr) < 0 || argaddr(1, &length) < 0) {
+    return -1;
+  }
+  struct proc *p = myproc();
+  int i;
+  for (i = 0; i < MAXMMAP; i++) {
+    if (p->mmem[i].used && (addr >= p->mmem[i].addr && addr < p->mmem[i].end)) {
+      break;
+    }
+  }
+  if (i == MAXMMAP) {
+    return -1;
+  }
+  
+  uint64 start = PGROUNDUP(addr);
+  uint64 end = PGROUNDUP(addr + length);
+  int npages = (end - start) / PGSIZE;
+  
+  int pos = (start - p->mmem[i].addr) / PGSIZE;
+  // mapped but never alloced
+  if ((p->mmem[i].alloc & (1 << pos)) == 0) {
+    for (uint64 x = start; x < end; x += PGSIZE) {
+      int off = 1 << ((x - start) / PGSIZE);
+      p->mmem[i].alloc &= ~(1 << off);
+      p->mmem[i].deleted |= (1 << off);
+    }
+    return 0;
+  }
+  // printf("start %p, end %p\n", start, end);
+  // printf("ip->size: %d\n", p->mmem[i].file->ip->size);
+  if (p->mmem[i].flags & MAP_SHARED) {
+    int r;
+    int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
+    int n = addr + length - start;
+    int j = 0;
+    int off = start - p->mmem[i].addr;
+    while(j < n) {
+      int n1 = n - j;
+      if(n1 > max)
+        n1 = max;
+
+      begin_op();
+      ilock(p->mmem[i].file->ip);
+      if ((r = writei(p->mmem[i].file->ip, 1, addr + j, off, n1)) > 0) {
+        off += r;
+      }
+      iunlock(p->mmem[i].file->ip);
+      end_op();
+
+      if(r != n1) {
+        // error from writei
+        break;
+      }
+      j += r;
+    }
+    if (j != n) {
+      return -1;
+    }
+    // ret = (i == n ? n : -1);
+  }
+  // printf("unmap start %d npages %d\n", start, npages);
+  uvmunmap(p->pagetable, start, npages, 1);
+  for (uint64 x = start; x < end; x += PGSIZE) {
+    int off = 1 << ((x - start) / PGSIZE);
+    p->mmem[i].alloc &= ~(1 << off);
+    p->mmem[i].deleted |= (1 << off);
+  }
+  if (check_last_unmap(&p->mmem[i])) {
+    p->mmem[i].used = 0;
+    fileclose(p->mmem[i].file);
+  }
+  // int cnt = 0;
+  // for (int i = 0; i < 31; i++) {
+  //   if (p->mmem[i].alloc & (1 << i)) {
+  //     cnt ++;
+  //   }
+  // }
+  // if (cnt == 0) {
+  //   // p->sz = p->mmem[i].addr;
+  //   p->mmem[i].used = 0;
+  //   fileclose(p->mmem[i].file);
+  //   // printf("unmap p->sz %d\n", p->sz);
+  // }
+  // printf("ip->size: %d\n", p->mmem[i].file->ip->size);
+  return 0;
+}
+
+
+
+int check_mmap(uint64 va) {
+  // printf("check_map\n");
+  int i;
+  struct proc *p = myproc();
+  // check if va is a mmap file addr
+  for (i = 0; i < MAXMMAP; i++) {
+    if (p->mmem[i].used && (va >= p->mmem[i].addr && va < p->mmem[i].end)) {
+      break;
+    }
+  }
+  if (i == MAXMMAP) {
+    return -1;
+  }
+  uint64 offset = va - p->mmem[i].addr;
+  // printf("mmem index %d, offset %d\n", i, offset);
+  char *mem;
+  mem = kalloc();
+  if (mem == 0) {
+    return -1;
+  }
+  int pos = offset / PGSIZE;
+  p->mmem[i].alloc |= (1 << pos);
+  p->mmem[i].deleted &= ~(1 << pos);
+  memset(mem, 0, PGSIZE);
+  ilock(p->mmem[i].file->ip);
+  int len = readi(p->mmem[i].file->ip, 0, (uint64) mem, offset, PGSIZE);
+  if (len == -1) {
+    iunlock(p->mmem[i].file->ip);
+    return -1;
+  }
+  // printf("ip->size: %d, read len: %d\n", p->mmem[i].file->ip->size, len);
+  // for (int i = 0; i < PGSIZE; i++) {
+  //   printf("%d", mem[i]);
+  // }
+  // printf("ip sz: %d\n", p->mmem[i].file->ip->size);
+  iunlock(p->mmem[i].file->ip);
+
+   // int flags = PTE_W|PTE_X|PTE_R|PTE_U;
+  int flags = (p->mmem[i].prot << 1) | PTE_U;
+  if (mappages(p->pagetable, va, PGSIZE, (uint64) mem, flags) != 0) {
+    kfree(mem);
+    return -1;
+  }
+  return 0;
+}

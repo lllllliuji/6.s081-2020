@@ -295,6 +295,12 @@ fork(void)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
+  for (int i = 0; i < MAXMMAP; i++) {
+    np->mmem[i] = p->mmem[i];
+    if (np->mmem[i].used) {
+      filedup(np->mmem[i].file);
+    }
+  }
 
   safestrcpy(np->name, p->name, sizeof(p->name));
 
@@ -350,6 +356,17 @@ exit(int status)
       struct file *f = p->ofile[fd];
       fileclose(f);
       p->ofile[fd] = 0;
+    }
+  }
+
+  for (int i = 0; i < MAXMMAP; i++) {
+    if (p->mmem[i].used) {
+      for (uint64 addr = p->mmem[i].addr; addr < p->mmem[i].end; addr += PGSIZE) {
+        int idx = (addr - p->mmem[i].addr) / PGSIZE;
+        if (p->mmem[i].alloc & (1 << idx)) {
+          uvmunmap(p->pagetable, addr, 1, 1);
+        }
+      }
     }
   }
 
